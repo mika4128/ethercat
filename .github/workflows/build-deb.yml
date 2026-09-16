@@ -2,10 +2,10 @@ name: Build .deb packages
 
 on:
   push:
-    branches: [dev-1.6, stable-1.6]
+    branches: [dev-1.7, dev-1.6, stable-1.6]
     tags: ['v*']
   pull_request:
-    branches: [dev-1.6, stable-1.6]
+    branches: [dev-1.7, dev-1.6, stable-1.6]
   workflow_dispatch:
 
 jobs:
