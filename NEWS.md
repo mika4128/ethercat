@@ -27,6 +27,8 @@
 - Improved macb driver performance
 - Ported parallel per-slave scan/config, recoverable AL retry, and
   Debian packaging from our 1.6 line.
+- Parallel scan uses the official SII cache ident fast-path when
+  `sii_caching` is enabled.
 
 ## Version 1.6.9
 

@@ -49,6 +49,7 @@
 // prototypes for private methods
 int ec_fsm_slave_scan_running(const ec_fsm_slave_scan_t *);
 void ec_fsm_slave_scan_enter_sii_size(ec_fsm_slave_scan_t *, ec_datagram_t *);
+void ec_fsm_slave_scan_enter_sii_ident(ec_fsm_slave_scan_t *, ec_datagram_t *);
 void ec_fsm_slave_scan_enter_assign_sii(ec_fsm_slave_scan_t *, ec_datagram_t *);
 void ec_fsm_slave_scan_enter_datalink(ec_fsm_slave_scan_t *, ec_datagram_t *);
 #ifdef EC_REGALIAS
@@ -69,6 +70,7 @@ void ec_fsm_slave_scan_state_datalink(ec_fsm_slave_scan_t *, ec_datagram_t *);
 #ifdef EC_SII_ASSIGN
 void ec_fsm_slave_scan_state_assign_sii(ec_fsm_slave_scan_t *, ec_datagram_t *);
 #endif
+void ec_fsm_slave_scan_state_sii_ident(ec_fsm_slave_scan_t *, ec_datagram_t *);
 void ec_fsm_slave_scan_state_sii_size(ec_fsm_slave_scan_t *, ec_datagram_t *);
 void ec_fsm_slave_scan_state_sii_data(ec_fsm_slave_scan_t *, ec_datagram_t *);
 #ifdef EC_REGALIAS
@@ -572,7 +574,11 @@ void ec_fsm_slave_scan_state_datalink(
 #ifdef EC_SII_ASSIGN
     ec_fsm_slave_scan_enter_assign_sii(fsm, datagram);
 #else
-    ec_fsm_slave_scan_enter_sii_size(fsm, datagram);
+    if (fsm->slave->master->sii_caching != EC_SII_DISABLE_CACHING) {
+        ec_fsm_slave_scan_enter_sii_ident(fsm, datagram);
+    } else {
+        ec_fsm_slave_scan_enter_sii_size(fsm, datagram);
+    }
 #endif
 }
 
@@ -609,10 +615,143 @@ void ec_fsm_slave_scan_state_assign_sii(
     }
 
 continue_with_sii_size:
-    ec_fsm_slave_scan_enter_sii_size(fsm, datagram);
+    if (fsm->slave->master->sii_caching != EC_SII_DISABLE_CACHING) {
+        ec_fsm_slave_scan_enter_sii_ident(fsm, datagram);
+    } else {
+        ec_fsm_slave_scan_enter_sii_size(fsm, datagram);
+    }
 }
 
 #endif
+
+/****************************************************************************/
+
+/** Enter slave scan state SII ident.
+ */
+void ec_fsm_slave_scan_enter_sii_ident(
+        ec_fsm_slave_scan_t *fsm, /**< slave state machine */
+        ec_datagram_t *datagram /**< Datagram to use. */
+        )
+{
+    EC_SLAVE_DBG(fsm->slave, 1, "Loading SII identification words.\n");
+
+    memset(fsm->sii_ident, 0, sizeof(fsm->sii_ident));
+    fsm->sii_offset = EC_SII_WORD_OFFSET_ALIAS;
+    ec_fsm_sii_read(&fsm->fsm_sii, fsm->slave, fsm->sii_offset,
+            EC_FSM_SII_USE_CONFIGURED_ADDRESS);
+    fsm->state = ec_fsm_slave_scan_state_sii_ident;
+    fsm->state(fsm, datagram);
+}
+
+/****************************************************************************/
+
+/** Slave scan state: SII ident (cache lookup).
+ */
+void ec_fsm_slave_scan_state_sii_ident(
+        ec_fsm_slave_scan_t *fsm, /**< slave state machine */
+        ec_datagram_t *datagram /**< Datagram to use. */
+        )
+{
+    ec_slave_t *slave = fsm->slave;
+    unsigned int words_fitting, words_to_copy;
+    uint32_t vendor, product, revision, serial;
+    ec_sii_page_t *cached;
+
+    if (ec_fsm_sii_exec(&fsm->fsm_sii, datagram)) {
+        return;
+    }
+
+    if (!ec_fsm_sii_success(&fsm->fsm_sii)) {
+        if (fsm->scan_retries--) {
+            EC_SLAVE_ERR(slave, "Failed to fetch SII identification."
+                    " Retrying.\n");
+            fsm->state = ec_fsm_slave_scan_state_retry;
+            return;
+        }
+        fsm->slave->error_flag = 1;
+        fsm->state = ec_fsm_slave_scan_state_error;
+        EC_SLAVE_ERR(slave, "Failed to fetch SII identification.\n");
+        return;
+    }
+
+    if (fsm->sii_offset == EC_SII_WORD_OFFSET_ALIAS) {
+        slave->sii.alias = EC_READ_U16(fsm->fsm_sii.value);
+        slave->effective_alias = slave->sii.alias;
+        EC_SLAVE_DBG(slave, 1, "Alias %u\n", slave->sii.alias);
+
+        fsm->sii_offset = EC_SII_WORD_OFFSET_VENDOR;
+        ec_fsm_sii_read(&fsm->fsm_sii, slave, fsm->sii_offset,
+                        EC_FSM_SII_USE_CONFIGURED_ADDRESS);
+        ec_fsm_sii_exec(&fsm->fsm_sii, datagram);
+        return;
+    }
+
+    words_fitting = EC_NUM_SII_IDENT_WORDS + EC_SII_WORD_OFFSET_VENDOR
+        - fsm->sii_offset;
+    words_to_copy = fsm->fsm_sii.read_word_count;
+    if (!words_to_copy) {
+        words_to_copy = 2;
+    }
+    if (words_to_copy > words_fitting) {
+        words_to_copy = words_fitting;
+    }
+    memcpy(fsm->sii_ident + (fsm->sii_offset - EC_SII_WORD_OFFSET_VENDOR) * 2,
+            fsm->fsm_sii.value, words_to_copy * 2);
+
+    if (fsm->sii_offset - EC_SII_WORD_OFFSET_VENDOR
+            + words_to_copy < EC_NUM_SII_IDENT_WORDS) {
+        fsm->sii_offset += words_to_copy;
+        ec_fsm_sii_read(&fsm->fsm_sii, slave, fsm->sii_offset,
+                EC_FSM_SII_USE_CONFIGURED_ADDRESS);
+        ec_fsm_sii_exec(&fsm->fsm_sii, datagram);
+        return;
+    }
+
+    vendor = EC_READ_U32(fsm->sii_ident);
+    product = EC_READ_U32(fsm->sii_ident + 4);
+    revision = EC_READ_U32(fsm->sii_ident + 8);
+    serial = EC_READ_U32(fsm->sii_ident + 12);
+
+    EC_SLAVE_DBG(slave, 1,
+            "Identification 0x%08X / 0x%08X / 0x%08X / 0x%08X\n",
+            vendor, product, revision, serial);
+
+    cached = ec_master_find_cached_sii_page(slave->master, vendor,
+            product, revision, serial, slave->sii.alias);
+    if (cached) {
+        EC_SLAVE_DBG(slave, 1, "Found matching SII page in cache.\n");
+
+        if (ec_sii_page_copy(&slave->sii_page, cached)) {
+            EC_SLAVE_ERR(slave, "Failed to copy cached SII page.\n");
+            fsm->slave->error_flag = 1;
+            fsm->state = ec_fsm_slave_scan_state_error;
+            return;
+        }
+
+        slave->sii_page.origin = EC_SII_PAGE_CACHED;
+
+        if (ec_slave_analyze_sii_data(slave)) {
+            EC_SLAVE_ERR(slave, "Failed to analyze cached SII data.\n");
+            fsm->slave->error_flag = 1;
+            fsm->state = ec_fsm_slave_scan_state_error;
+            return;
+        }
+
+#ifdef EC_REGALIAS
+        ec_fsm_slave_scan_enter_regalias(fsm, datagram);
+#else
+        if (slave->sii.mailbox_protocols & EC_MBOX_COE) {
+            ec_fsm_slave_scan_enter_preop(fsm, datagram);
+        } else {
+            fsm->state = ec_fsm_slave_scan_state_end;
+        }
+#endif
+        return;
+    }
+
+    EC_SLAVE_DBG(slave, 1, "No matching SII page found in cache.\n");
+    ec_fsm_slave_scan_enter_sii_size(fsm, datagram);
+}
 
 /****************************************************************************/
 
