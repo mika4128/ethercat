@@ -64,3 +64,8 @@ debian/*.debhelper
 debian/debhelper-build-stamp
 debian/autoreconf.after
 debian/autoreconf.before
+
+# IDE / editor (local)
+.vscode/
+.idea/
+*.code-workspace
