@@ -206,7 +206,7 @@ void ec_slave_config_clear(
  * Configuration data for the FMMU is saved in the slave config structure and
  * is written to the slave during the configuration. The FMMU configuration
  * is done in a way, that the complete data range of the corresponding sync
- * manager is covered. Seperate FMMUs are configured for each domain. If the
+ * manager is covered. Separate FMMUs are configured for each domain. If the
  * FMMU configuration is already prepared, the function does nothing and
  * returns with success.
  *
@@ -863,7 +863,6 @@ int ecrt_slave_config_pdos(ec_slave_config_t *sc,
         ecrt_slave_config_pdo_assign_clear(sc, sync_info->index);
 
         if (sync_info->n_pdos && sync_info->pdos) {
-
             for (j = 0; j < sync_info->n_pdos; j++) {
                 pdo_info = &sync_info->pdos[j];
 
@@ -1548,7 +1547,7 @@ int ecrt_slave_config_eoe_dns_address(ec_slave_config_t *sc,
 int ecrt_slave_config_eoe_hostname(ec_slave_config_t *sc,
         const char *name)
 {
-    strncpy(sc->eoe_ip_param_request.name, name, EC_MAX_HOSTNAME_SIZE - 1);
+    strscpy(sc->eoe_ip_param_request.name, name, EC_MAX_HOSTNAME_SIZE - 1);
     sc->eoe_ip_param_request.name_included = 1;
     return 0;
 }

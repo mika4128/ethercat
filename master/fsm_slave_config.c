@@ -126,7 +126,7 @@ void ec_fsm_slave_config_init(
         ec_fsm_change_t *fsm_change, /**< State change state machine to use. */
         ec_fsm_coe_t *fsm_coe, /**< CoE state machine to use. */
         ec_fsm_soe_t *fsm_soe, /**< SoE state machine to use. */
-        ec_fsm_pdo_t *fsm_pdo, /**< PDO configuration state machine to use. */
+        ec_fsm_pdo_t *fsm_pdo, /**< PDO config. state machine to use. */
         ec_fsm_eoe_t *fsm_eoe /**< EoE state machine to use. */
         )
 {
@@ -1092,7 +1092,7 @@ void ec_fsm_slave_config_state_pdo_conf(
         ec_datagram_t *datagram /**< Datagram to use. */
         )
 {
-    // TODO check for config here
+    // TODO(fp) check for config here
 
     if (ec_fsm_pdo_exec(fsm->fsm_pdo, datagram)) {
         return;
@@ -1555,7 +1555,6 @@ void ec_fsm_slave_config_state_dc_sync_check(
     diff_ms = (fsm->datagram->jiffies_received - fsm->jiffies_start) * 1000 / HZ;
 
     if (abs_sync_diff > EC_DC_MAX_SYNC_DIFF_NS) {
-
         if (diff_ms >= EC_DC_SYNC_WAIT_MS) {
             EC_SLAVE_WARN(slave, "Slave did not sync after %lu ms.\n",
                     diff_ms);

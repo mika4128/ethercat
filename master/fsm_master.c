@@ -1,6 +1,6 @@
 /*****************************************************************************
  *
- *  Copyright (C) 2006-2023  Florian Pose, Ingenieurgemeinschaft IgH
+ *  Copyright (C) 2006-2026  Florian Pose, Ingenieurgemeinschaft IgH
  *
  *  This file is part of the IgH EtherCAT Master.
  *
@@ -32,6 +32,7 @@
 #ifdef EC_EOE
 #include "ethernet.h"
 #endif
+#include "smp.h"
 
 #include "fsm_master.h"
 #include "fsm_foe.h"
@@ -172,8 +173,9 @@ int ec_fsm_master_exec(
         ec_fsm_master_t *fsm /**< Master state machine. */
         )
 {
-    if (fsm->datagram->state == EC_DATAGRAM_SENT
-        || fsm->datagram->state == EC_DATAGRAM_QUEUED) {
+    ec_datagram_state_t state = smp_load_acquire(&fsm->datagram->state);
+
+    if (state == EC_DATAGRAM_SENT || state == EC_DATAGRAM_QUEUED) {
         // datagram was not sent or received yet.
         return 0;
     }
@@ -314,8 +316,8 @@ void ec_fsm_master_state_broadcast(
         for (dev_idx = EC_DEVICE_MAIN;
                 dev_idx < ec_master_num_devices(master); dev_idx++) {
             fsm->slave_states[dev_idx] = 0x00;
-            fsm->slaves_responding[dev_idx] = 0; /* Reset to trigger rescan on
-                                                    next link up. */
+            /* Reset to trigger rescan on next link up. */
+            fsm->slaves_responding[dev_idx] = 0;
         }
     }
     fsm->link_state[fsm->dev_idx] = master->devices[fsm->dev_idx].link_state;
@@ -471,8 +473,8 @@ void ec_fsm_master_state_broadcast(
 
             fsm->slave = master->slaves; // begin with first slave
             ec_fsm_master_enter_write_system_times(fsm);
-
-        } else {
+        }
+        else {
             // fetch state from first slave
             fsm->slave = master->slaves;
             ec_datagram_fprd(fsm->datagram, fsm->slave->station_address,
@@ -568,7 +570,6 @@ int ec_fsm_master_action_process_int_request(
     for (slave = master->slaves;
             slave < master->slaves + master->slave_count;
             slave++) {
-
         if (!slave->config) {
             continue;
         }
@@ -581,7 +582,6 @@ int ec_fsm_master_action_process_int_request(
 
         list_for_each_entry(sdo_req, &slave->config->sdo_requests, list) {
             if (sdo_req->state == EC_INT_REQUEST_QUEUED) {
-
                 if (ec_sdo_request_timed_out(sdo_req)) {
                     sdo_req->state = EC_INT_REQUEST_FAILURE;
                     EC_SLAVE_DBG(slave, 1, "Internal SDO request"
@@ -609,7 +609,6 @@ int ec_fsm_master_action_process_int_request(
 
         list_for_each_entry(soe_req, &slave->config->soe_requests, list) {
             if (soe_req->state == EC_INT_REQUEST_QUEUED) {
-
                 if (ec_soe_request_timed_out(soe_req)) {
                     soe_req->state = EC_INT_REQUEST_FAILURE;
                     EC_SLAVE_DBG(slave, 1, "Internal SoE request"
@@ -1120,7 +1119,6 @@ void ec_fsm_master_enter_write_system_times(
     ec_master_t *master = fsm->master;
 
     if (master->dc_ref_time) {
-
         while (fsm->slave < master->slaves + master->slave_count) {
             if (!fsm->slave->base_dc_supported
                     || !fsm->slave->has_dc_system_time) {
@@ -1466,10 +1464,10 @@ void ec_fsm_master_state_write_sii(
     if (request->offset <= 4 && request->offset + request->nwords > 4) {
         // alias was written
         slave->sii.alias = EC_READ_U16(request->words + 4);
-        // TODO: read alias from register 0x0012
+        // TODO(fp): read alias from register 0x0012
         slave->effective_alias = slave->sii.alias;
     }
-    // TODO: Evaluate other SII contents!
+    // TODO(fp): Evaluate other SII contents!
 
     request->state = EC_INT_REQUEST_SUCCESS;
     wake_up_all(&master->request_queue);

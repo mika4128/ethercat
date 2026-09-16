@@ -1,3 +1,11 @@
+ethercat (1.6.13) unstable; urgency=medium
+
+  * Sync official stable-1.6 through 1.6.13 (drivers, FoE/EoE hardening,
+    datagram re-order barriers, max-frame split).
+  * Keep our parallel slave scan/config, AL recovery and DC patches.
+
+ -- mika <mika-net@outlook.com>  Wed, 16 Sep 2026 01:40:00 -0400
+
 ethercat (1.6.9) unstable; urgency=medium
 
   * Parallel slave configuration (multi-slave bus reaches OP in seconds).

@@ -1,6 +1,6 @@
 /*****************************************************************************
  *
- *  Copyright (C) 2006-2020  Florian Pose, Ingenieurgemeinschaft IgH
+ *  Copyright (C) 2006-2026  Florian Pose, Ingenieurgemeinschaft IgH
  *
  *  This file is part of the IgH EtherCAT Master.
  *
@@ -43,6 +43,7 @@
 #include "slave_config.h"
 #include "device.h"
 #include "datagram.h"
+#include "smp.h"
 
 #ifdef EC_EOE
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
@@ -53,29 +54,13 @@
 #endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 17, 0) || \
-    (defined(CONFIG_PREEMPT_RT_FULL) && LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0))
+    (defined(CONFIG_PREEMPT_RT_FULL) && \
+     LINUX_VERSION_CODE >= KERNEL_VERSION(3, 2, 0))
 #  define ec_rt_lock_interruptible(lock) \
           rt_mutex_lock_interruptible(lock)
 #else
 #  define ec_rt_lock_interruptible(lock) \
           rt_mutex_lock_interruptible(lock, 0)
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 12, 47)
-
-#define smp_store_release(p, v) \
-do { \
-	smp_mb(); \
-	ACCESS_ONCE(*p) = (v); \
-} while (0)
-
-#define smp_load_acquire(p)	\
-({ \
-	typeof(*p) ___p1 = ACCESS_ONCE(*p); \
-	smp_mb(); \
-	___p1; \
-})
-
 #endif
 
 #include "master.h"
@@ -616,8 +601,9 @@ int ec_master_thread_start(
         return err;
     }
     if (0xffffffff != master->run_on_cpu) {
-        EC_MASTER_INFO(master, " binding thread to cpu %u\n",master->run_on_cpu);
-        kthread_bind(master->thread,master->run_on_cpu);
+        EC_MASTER_INFO(master, " binding thread to cpu %u\n",
+                master->run_on_cpu);
+        kthread_bind(master->thread, master->run_on_cpu);
     }
     /* Ignoring return value of wake_up_process */
     (void) wake_up_process(master->thread);
@@ -863,7 +849,7 @@ void ec_master_inject_external_datagrams(
             queue_size = new_queue_size;
         }
         else if (datagram->data_size > master->max_queue_size) {
-            datagram->state = EC_DATAGRAM_ERROR;
+            smp_store_release(&datagram->state, EC_DATAGRAM_ERROR);
             EC_MASTER_ERR(master, "External datagram %s is too large,"
                     " size=%zu, max_queue_size=%zu\n",
                     datagram->name, datagram->data_size,
@@ -884,7 +870,7 @@ void ec_master_inject_external_datagrams(
                 unsigned int time_us;
 #endif
 
-                datagram->state = EC_DATAGRAM_ERROR;
+                smp_store_release(&datagram->state, EC_DATAGRAM_ERROR);
 
 #if defined EC_RT_SYSLOG || DEBUG_INJECT
 #ifdef EC_HAVE_CYCLES
@@ -988,7 +974,7 @@ void ec_master_queue_datagram(
             EC_MASTER_DBG(master, 1,
                     "Datagram %p already queued (skipping).\n", datagram);
 #endif
-            datagram->state = EC_DATAGRAM_QUEUED;
+            smp_store_release(&datagram->state, EC_DATAGRAM_QUEUED);
             return;
         }
     }
@@ -1002,7 +988,7 @@ void ec_master_queue_datagram(
     }
 
     list_add_tail(&datagram->queue, &master->datagram_queue);
-    datagram->state = EC_DATAGRAM_QUEUED;
+    smp_store_release(&datagram->state, EC_DATAGRAM_QUEUED);
 }
 
 /****************************************************************************/
@@ -1120,8 +1106,8 @@ void ec_master_send_datagrams(
             }
 
             // EtherCAT datagram header
-            EC_WRITE_U8 (cur_data, datagram->type);
-            EC_WRITE_U8 (cur_data + 1, datagram->index);
+            EC_WRITE_U8(cur_data, datagram->type);
+            EC_WRITE_U8(cur_data + 1, datagram->index);
             memcpy(cur_data + 2, datagram->address, EC_ADDR_LEN);
             EC_WRITE_U16(cur_data + 6, datagram->data_size & 0x7FF);
             EC_WRITE_U16(cur_data + 8, 0x0000);
@@ -1163,13 +1149,13 @@ break_send:
 
         // set datagram states and sending timestamps
         list_for_each_entry_safe(datagram, next, &sent_datagrams, sent) {
-            datagram->state = EC_DATAGRAM_SENT;
 #ifdef EC_HAVE_CYCLES
             datagram->cycles_sent = cycles_sent;
 #endif
             datagram->jiffies_sent = jiffies_sent;
             datagram->app_time_sent = master->app_time;
-            list_del_init(&datagram->sent); // empty list of sent datagrams
+            list_del_init(&datagram->sent); // remove from sent queue
+            smp_store_release(&datagram->state, EC_DATAGRAM_SENT);
         }
 
         frame_count++;
@@ -1245,8 +1231,8 @@ void ec_master_receive_datagrams(
     cmd_follows = 1;
     while (cmd_follows) {
         // process datagram header
-        datagram_type  = EC_READ_U8 (cur_data);
-        datagram_index = EC_READ_U8 (cur_data + 1);
+        datagram_type  = EC_READ_U8(cur_data);
+        datagram_index = EC_READ_U8(cur_data + 1);
         data_size      = EC_READ_U16(cur_data + 6) & 0x07FF;
         cmd_follows    = EC_READ_U16(cur_data + 6) & 0x8000;
         cur_data += EC_DATAGRAM_HEADER_SIZE;
@@ -1313,15 +1299,19 @@ void ec_master_receive_datagrams(
         datagram->working_counter = EC_READ_U16(cur_data);
         cur_data += EC_DATAGRAM_FOOTER_SIZE;
 
-        // dequeue the received datagram
-        datagram->state = EC_DATAGRAM_RECEIVED;
+        // set the receive time
 #ifdef EC_HAVE_CYCLES
         datagram->cycles_received =
             master->devices[EC_DEVICE_MAIN].cycles_poll;
 #endif
         datagram->jiffies_received =
             master->devices[EC_DEVICE_MAIN].jiffies_poll;
+
+        // dequeue the received datagram
         list_del_init(&datagram->queue);
+
+        // set the state (with a barrier)
+        smp_store_release(&datagram->state, EC_DATAGRAM_RECEIVED);
     }
 }
 
@@ -1489,12 +1479,12 @@ void ec_master_nanosleep(const unsigned long nsecs)
         set_current_state(TASK_INTERRUPTIBLE);
         hrtimer_start(&t.timer, hrtimer_get_expires(&t.timer), mode);
 
-        if (likely(t.task))
+        if (likely(t.task)) {
             schedule();
+        }
 
         hrtimer_cancel(&t.timer);
         mode = HRTIMER_MODE_ABS;
-
     } while (t.task && !signal_pending(current));
 }
 
@@ -1575,7 +1565,6 @@ void ec_master_exec_slave_fsms(
 
     while (master->fsm_exec_count < EC_EXT_RING_SIZE / 2
             && count < master->slave_count) {
-
         /* Only schedule slaves that have work AND are not already being
          * driven from the exec list; otherwise a slave whose state stays
          * "busy" across ticks (state_config, state_sdo_request, ...) would
@@ -1705,7 +1694,6 @@ static int ec_master_operation_thread(void *priv_data)
          * https://gitlab.com/etherlab.org/ethercat/-/work_items/168 */
         seq_rt = smp_load_acquire(&master->injection_seq_rt);
         if (seq_rt == master->injection_seq_fsm) { // was injected
-
             // output statistics
             ec_master_output_stats(master);
 
@@ -2193,7 +2181,6 @@ void ec_master_find_dc_ref_clock(
                 break;
             }
         }
-
     }
 
     master->dc_ref_clock = ref;
@@ -2525,7 +2512,6 @@ int ecrt_master_deactivate(ec_master_t *master)
     for (slave = master->slaves;
             slave < master->slaves + master->slave_count;
             slave++) {
-
         // set states for all slaves
         ec_slave_request_state(slave, EC_SLAVE_STATE_PREOP);
 
@@ -2589,8 +2575,8 @@ int ecrt_master_send(ec_master_t *master)
             list_for_each_entry_safe(datagram, n,
                     &master->datagram_queue, queue) {
                 if (datagram->device_index == dev_idx) {
-                    datagram->state = EC_DATAGRAM_ERROR;
                     list_del_init(&datagram->queue);
+                    smp_store_release(&datagram->state, EC_DATAGRAM_ERROR);
                 }
             }
 
@@ -2638,7 +2624,7 @@ int ecrt_master_receive(ec_master_t *master)
                 datagram->jiffies_sent > timeout_jiffies) {
 #endif
             list_del_init(&datagram->queue);
-            datagram->state = EC_DATAGRAM_TIMED_OUT;
+            smp_store_release(&datagram->state, EC_DATAGRAM_TIMED_OUT);
             master->stats.timeouts++;
 
 #ifdef EC_RT_SYSLOG
@@ -2854,7 +2840,7 @@ int ecrt_master_get_slave(ec_master_t *master, uint16_t slave_position,
     slave_info->sync_count = slave->sii.sync_count;
     slave_info->sdo_count = ec_slave_sdo_count(slave);
     if (slave->sii.name) {
-        strncpy(slave_info->name, slave->sii.name, EC_MAX_STRING_LENGTH);
+        strscpy(slave_info->name, slave->sii.name, EC_MAX_STRING_LENGTH);
     } else {
         slave_info->name[0] = 0;
     }

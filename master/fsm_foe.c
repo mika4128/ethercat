@@ -769,7 +769,7 @@ void ec_fsm_foe_state_data_read(
                 fsm->request->error_code);
         if (rec_size > 6) {
             uint8_t text[256];
-            strncpy(text, data + 6, min(rec_size - 6, sizeof(text)));
+            strscpy(text, data + 6, min(rec_size - 6, sizeof(text)));
             EC_SLAVE_ERR(slave, "FoE Error Text: %s\n", text);
         }
         ec_foe_set_rx_error(fsm, FOE_OPCODE_ERROR);
@@ -788,6 +788,13 @@ void ec_fsm_foe_state_data_read(
     if (packet_no != fsm->rx_expected_packet_no) {
         EC_SLAVE_ERR(slave, "Received unexpected packet number.\n");
         ec_foe_set_rx_error(fsm, FOE_PACKETNO_ERROR);
+        return;
+    }
+
+    if (rec_size < EC_FOE_HEADER_SIZE) {
+        EC_SLAVE_ERR(slave, "Received corrupted FoE size (%zu bytes)!\n",
+                rec_size);
+        ec_foe_set_rx_error(fsm, FOE_PROT_ERROR);
         return;
     }
 
