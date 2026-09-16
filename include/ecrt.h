@@ -310,6 +310,16 @@
  */
 #define EC_COE_EMERGENCY_MSG_SIZE 8
 
+/** Size of the per-AL-state access rights array in ec_sdo_info_entry_t.
+ *
+ * Same value as the kernel-internal enum EC_SDO_ENTRY_ACCESS_COUNT in
+ * master/globals.h; a separate name is used here so that translation
+ * units that pull in both headers do not collide a macro with the enum.
+ *
+ * \see ecrt_sdo_get_info_entry().
+ */
+#define EC_SDO_ENTRY_ACCESS_COUNTER 3
+
 /*****************************************************************************
  * Data types
  ****************************************************************************/
@@ -357,6 +367,8 @@ typedef struct {
                                   - Bit 3: \a OP */
     unsigned int link_up : 1; /**< \a true, if at least one Ethernet link is
                                 up. */
+    unsigned int scan_busy : 1; /**< \a true, if a slave rescan is in progress.
+                                  */
 } ec_master_state_t;
 
 /****************************************************************************/
@@ -402,7 +414,13 @@ typedef struct  {
                                  - 8: \a OP
 
                                  Note that each state is coded in a different
-                                 bit. */
+                                 bit! */
+    uint16_t position;         /**< Ring position of the slave. 0xFFFF if the
+                                 configuration is not currently attached to a
+                                 slave on the bus. */
+    unsigned int error_flag : 1; /**< The slave has an unrecoverable error. */
+    unsigned int ready : 1;      /**< The slave is ready for external requests
+                                    (mailbox and SDO). */
 } ec_slave_config_state_t;
 
 /****************************************************************************/
@@ -456,6 +474,10 @@ typedef struct {
     uint8_t link_up; /**< Link detected. */
     uint8_t loop_closed; /**< Loop closed. */
     uint8_t signal_detected; /**< Detected signal on RX port. */
+    uint8_t bypassed;   /**< Traffic is bypassing this port, for example
+                           because redundancy reroutes around it. The port
+                           is physically up but the DC receive timestamp
+                           never changes. */
 } ec_slave_port_link_t;
 
 /****************************************************************************/
@@ -483,8 +505,13 @@ typedef struct {
                                port.  */
         uint32_t delay_to_next_dc; /**< Delay [ns] to next DC slave. */
     } ports[EC_MAX_PORTS]; /**< Port information. */
+    uint8_t upstream_port; /**< Index of the port that faces the master
+                                (upstream). 0 for a normal daisy-chain; can
+                                be non-zero if the slave is wired unusually
+                                or if port 0 is bypassed. */
     uint8_t al_state; /**< Current state of the slave. */
     uint8_t error_flag; /**< Error flag for that slave. */
+    uint8_t ready; /**< Non-zero if the slave is ready for external requests. */
     uint8_t sync_count; /**< Number of sync managers. */
     uint16_t sdo_count; /**< Number of SDOs. */
     char name[EC_MAX_STRING_LENGTH]; /**< Name of the slave. */
@@ -687,6 +714,36 @@ typedef enum {
     EC_SII_SERIAL = 8, /** Use serial number. */
     EC_SII_ALIAS = 16, /** Use alias address. */
 } ec_sii_caching_fields_t;
+
+/****************************************************************************/
+
+/** Application-layer SDO information (object).
+ *
+ * Returned by ecrt_sdo_info_get(). Describes a dictionary object.
+ */
+typedef struct {
+    uint16_t index;                       /**< Object index. */
+    uint8_t  maxindex;                    /**< Highest subindex. */
+    uint8_t  object_code;                 /**< CiA 301 object code
+                                               (VAR, ARRAY, RECORD, ...). */
+    char     name[EC_MAX_STRING_LENGTH];  /**< Object name. */
+} ec_sdo_info_t;
+
+/****************************************************************************/
+
+/** Application-layer SDO information (entry).
+ *
+ * Returned by ecrt_sdo_get_info_entry(). Describes a single sub-entry.
+ */
+typedef struct {
+    uint16_t data_type;                           /**< Data type. */
+    uint16_t bit_length;                          /**< Width in bits. */
+    uint8_t  read_access[EC_SDO_ENTRY_ACCESS_COUNTER];  /**< Read permission
+                                                            per AL state. */
+    uint8_t  write_access[EC_SDO_ENTRY_ACCESS_COUNTER]; /**< Write permission
+                                                            per AL state. */
+    char     description[EC_MAX_STRING_LENGTH];   /**< Entry description. */
+} ec_sdo_info_entry_t;
 
 /*****************************************************************************
  * Global functions
@@ -1148,6 +1205,64 @@ EC_PUBLIC_API int ecrt_master_activate(
  */
 EC_PUBLIC_API int ecrt_master_deactivate(
         ec_master_t *master /**< EtherCAT master. */
+        );
+
+/** Trigger a bus rescan.
+ *
+ * Requests the master to restart slave scanning. Equivalent of the
+ * \c ethercat rescan tool command but callable from userspace applications.
+ *
+ * \return 0 on success, otherwise negative errno.
+ */
+EC_PUBLIC_API int ecrt_master_rescan(
+        ec_master_t *master /**< EtherCAT master. */
+        );
+
+/** Request an individual slave to transition to an AL state.
+ *
+ * Bypasses the automatic slave state handling of the master FSM and
+ * asks a single slave to move to the given application-layer state
+ * (INIT, PREOP, SAFEOP, OP). The request is forwarded to the master
+ * which schedules the state change; the call itself is non-blocking.
+ *
+ * This is typically used to recover a slave that is stuck in SAFEOP
+ * by forcing it back to INIT.
+ *
+ * \return 0 on success, otherwise a negative error code.
+ */
+EC_PUBLIC_API int ecrt_master_request_slave_state(
+        ec_master_t *master,       /**< EtherCAT master. */
+        uint16_t slave_position,   /**< Slave ring position. */
+        uint8_t state              /**< Target AL state. */
+        );
+
+/** Read SDO information (object) from the slave dictionary.
+ *
+ * Reads one dictionary object at the given position. The dictionary must
+ * have been fetched by the master (either automatically or via
+ * ecrt_master_rescan()).
+ *
+ * \return 0 on success, otherwise a negative error code.
+ */
+EC_PUBLIC_API int ecrt_sdo_info_get(
+        ec_master_t *master,      /**< EtherCAT master. */
+        uint16_t slave_position,  /**< Slave position in the bus. */
+        uint16_t sdo_position,    /**< Position in the slave's dictionary. */
+        ec_sdo_info_t *sdo        /**< Output structure. */
+        );
+
+/** Read SDO information (entry) from the slave dictionary.
+ *
+ * Reads one sub-entry of a dictionary object.
+ *
+ * \return 0 on success, otherwise a negative error code.
+ */
+EC_PUBLIC_API int ecrt_sdo_get_info_entry(
+        ec_master_t *master,          /**< EtherCAT master. */
+        uint16_t slave_position,      /**< Slave position in the bus. */
+        uint16_t index,               /**< Object index. */
+        uint8_t subindex,             /**< Sub-index. */
+        ec_sdo_info_entry_t *entry    /**< Output structure. */
         );
 
 /** Set interval between calls to ecrt_master_send().

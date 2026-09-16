@@ -1,0 +1,69 @@
+name: Sync upstream branches from GitLab
+
+# Mirrors every branch from gitlab.com/etherlab.org/ethercat into this
+# repository, except for the locally maintained branches listed in
+# CUSTOM_BRANCHES. Tags are mirrored too. Custom branches and any
+# branch that exists only on GitHub are left untouched.
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'   # weekly, Sunday 00:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write          # GITHUB_TOKEN must be allowed to push
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_URL: https://gitlab.com/etherlab.org/ethercat.git
+      # Branches that live only here and must never be overwritten.
+      CUSTOM_BRANCHES: 'dev-1.6 stable-1.6'
+    steps:
+      - name: Configure git identity
+        run: |
+          git config --global user.name "mika"
+          git config --global user.email "mika-net@outlook.com"
+
+      - name: Clone target repository
+        run: |
+          git clone --no-checkout \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            repo
+          cd repo
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream --prune
+          git fetch upstream --prune --tags
+
+      - name: Mirror upstream branches (skipping custom branches)
+        working-directory: repo
+        run: |
+          set -euo pipefail
+          # Space-padded skip list so substring matches don't bite.
+          skip=" $CUSTOM_BRANCHES "
+          # ls-remote queries the upstream URL directly; no reliance on
+          # what was fetched into refs/remotes/.
+          git ls-remote --heads upstream \
+            | awk '{print $2}' \
+            | sed 's|^refs/heads/||' \
+            | while read -r branch; do
+                if printf '%s' "$skip" | grep -q " $branch "; then
+                  echo "skip custom branch: $branch"
+                  continue
+                fi
+                echo "mirror branch: $branch"
+                # Push the upstream tip straight onto origin's branch.
+                # No local checkout, no merge, no chance of "unrelated
+                # histories" failing the run.
+                git push --force origin \
+                  "refs/remotes/upstream/$branch:refs/heads/$branch"
+              done
+
+      - name: Mirror upstream tags
+        working-directory: repo
+        run: |
+          set -euo pipefail
+          # Push every tag that came in with the upstream fetch. Existing
+          # tags on origin keep their value unless upstream has moved them.
+          git push --force origin 'refs/tags/*:refs/tags/*'

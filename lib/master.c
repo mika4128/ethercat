@@ -171,12 +171,6 @@ ec_slave_config_t *ecrt_master_slave_config(ec_master_t *master,
     ec_slave_config_t *sc;
     int ret;
 
-    sc = malloc(sizeof(ec_slave_config_t));
-    if (!sc) {
-        fprintf(stderr, "Failed to allocate memory.\n");
-        return 0;
-    }
-
     data.alias = alias;
     data.position = position;
     data.vendor_id = vendor_id;
@@ -186,7 +180,21 @@ ec_slave_config_t *ecrt_master_slave_config(ec_master_t *master,
     if (EC_IOCTL_IS_ERROR(ret)) {
         fprintf(stderr, "Failed to create slave config: %s\n",
                 strerror(EC_IOCTL_ERRNO(ret)));
-        free(sc);
+        return 0;
+    }
+
+    /* Reuse existing slave config if it was already registered. Kernel
+     * side de-duplicates by (alias, position); mirror that here to avoid
+     * leaking malloc()s and appending duplicate nodes to master->first_config. */
+    for (sc = master->first_config; sc; sc = sc->next) {
+        if (sc->alias == alias && sc->position == position) {
+            return sc;
+        }
+    }
+
+    sc = malloc(sizeof(ec_slave_config_t));
+    if (!sc) {
+        fprintf(stderr, "Failed to allocate memory.\n");
         return 0;
     }
 
@@ -282,8 +290,9 @@ int ecrt_master_get_slave(ec_master_t *master, uint16_t slave_position,
 
     ret = ioctl(master->fd, EC_IOCTL_SLAVE, &data);
     if (EC_IOCTL_IS_ERROR(ret)) {
-        fprintf(stderr, "Failed to get slave info: %s\n",
-                strerror(EC_IOCTL_ERRNO(ret)));
+        /* Error code is already returned to the caller; polling
+         * loops call this for non-existent positions on purpose, so
+         * logging every miss floods stderr and syslog. */
         return -EC_IOCTL_ERRNO(ret);
     }
 
@@ -301,13 +310,16 @@ int ecrt_master_get_slave(ec_master_t *master, uint16_t slave_position,
             data.ports[i].link.loop_closed;
         slave_info->ports[i].link.signal_detected =
             data.ports[i].link.signal_detected;
+        slave_info->ports[i].link.bypassed = data.ports[i].link.bypassed;
         slave_info->ports[i].receive_time = data.ports[i].receive_time;
         slave_info->ports[i].next_slave = data.ports[i].next_slave;
         slave_info->ports[i].delay_to_next_dc =
             data.ports[i].delay_to_next_dc;
     }
+    slave_info->upstream_port = data.upstream_port;
     slave_info->al_state = data.al_state;
     slave_info->error_flag = data.error_flag;
+    slave_info->ready = data.ready;
     slave_info->sync_count = data.sync_count;
     slave_info->sdo_count = data.sdo_count;
     strncpy(slave_info->name, data.name, EC_MAX_STRING_LENGTH);
@@ -627,6 +639,35 @@ int ecrt_master_deactivate(ec_master_t *master)
 
 /****************************************************************************/
 
+int ecrt_master_rescan(ec_master_t *master)
+{
+    int ret = ioctl(master->fd, EC_IOCTL_MASTER_RESCAN, NULL);
+    if (EC_IOCTL_IS_ERROR(ret)) {
+        return -EC_IOCTL_ERRNO(ret);
+    }
+    return 0;
+}
+
+/****************************************************************************/
+
+int ecrt_master_request_slave_state(ec_master_t *master,
+        uint16_t slave_position, uint8_t state)
+{
+    ec_ioctl_slave_state_t data;
+    int ret;
+
+    data.slave_position = slave_position;
+    data.al_state = state;
+
+    ret = ioctl(master->fd, EC_IOCTL_SLAVE_STATE, &data);
+    if (EC_IOCTL_IS_ERROR(ret)) {
+        return -EC_IOCTL_ERRNO(ret);
+    }
+    return 0;
+}
+
+/****************************************************************************/
+
 int ecrt_master_set_send_interval(ec_master_t *master,
         size_t send_interval_us)
 {
@@ -768,9 +809,17 @@ int ecrt_master_reference_clock_time(const ec_master_t *master,
 
     ret = ioctl(master->fd, EC_IOCTL_REF_CLOCK_TIME, time);
     if (EC_IOCTL_IS_ERROR(ret)) {
-        fprintf(stderr, "Failed to get reference clock time: %s\n",
-                strerror(EC_IOCTL_ERRNO(ret)));
-        return -EC_IOCTL_ERRNO(ret);
+        ret = EC_IOCTL_ERRNO(ret);
+        /* Match Synapticon's lib: EIO / ENXIO / EAGAIN are normal
+         * transients (sync_datagram not yet received, no DC reference
+         * clock yet, or per-slave DC offsets still being written).
+         * The application polls this every cycle - logging on every
+         * miss spams syslog before the bus has even settled. */
+        if (ret != EIO && ret != ENXIO && ret != EAGAIN) {
+            fprintf(stderr, "Failed to get reference clock time: %s\n",
+                    strerror(ret));
+        }
+        return -ret;
     }
 
     return ret;

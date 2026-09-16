@@ -47,7 +47,7 @@
  *
  * Increment this when changing the ioctl interface!
  */
-#define EC_IOCTL_VERSION_MAGIC 38
+#define EC_IOCTL_VERSION_MAGIC 43
 
 // Command-line tool
 // NOLINTBEGIN(whitespace/line_length)
@@ -251,6 +251,7 @@ typedef struct {
         uint16_t next_slave;
         uint32_t delay_to_next_dc;
     } ports[EC_MAX_PORTS];
+    uint8_t upstream_port;
     uint8_t fmmu_bit;
     uint8_t dc_supported;
     ec_slave_dc_range_t dc_range;
@@ -258,6 +259,7 @@ typedef struct {
     uint32_t transmission_delay;
     uint8_t al_state;
     uint8_t error_flag;
+    uint8_t ready;
     uint8_t sync_count;
     uint16_t sdo_count;
     uint32_t sii_nwords;
@@ -370,6 +372,7 @@ typedef struct {
     // outputs
     uint16_t sdo_index;
     uint8_t max_subindex;
+    uint8_t object_code;
     int8_t name[EC_IOCTL_STRING_SIZE];
 } ec_ioctl_slave_sdo_t;
 
@@ -444,6 +447,7 @@ typedef struct {
 
 typedef struct {
     // inputs
+    uint32_t password;
     uint16_t slave_position;
     uint16_t offset;
     size_t buffer_size;

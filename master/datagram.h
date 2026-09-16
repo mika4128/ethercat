@@ -65,6 +65,8 @@ typedef enum {
  */
 typedef enum {
     EC_DATAGRAM_INIT,      /**< Initial state of a new datagram. */
+    EC_DATAGRAM_INVALID,   /**< Allocated but should be skipped when injecting
+                                (external-ring slot handed back unused). */
     EC_DATAGRAM_QUEUED,    /**< Queued for sending. */
     EC_DATAGRAM_SENT,      /**< Sent (still in the queue). */
     EC_DATAGRAM_RECEIVED,  /**< Received (dequeued). */
@@ -96,6 +98,7 @@ typedef struct {
     cycles_t cycles_sent; /**< Time, when the datagram was sent. */
 #endif
     unsigned long jiffies_sent; /**< Jiffies, when the datagram was sent. */
+    uint64_t app_time_sent; /**< App time when the datagram was sent (ns). */
 #ifdef EC_HAVE_CYCLES
     cycles_t cycles_received; /**< Time, when the datagram was received. */
 #endif
@@ -113,6 +116,7 @@ void ec_datagram_clear(ec_datagram_t *);
 void ec_datagram_unqueue(ec_datagram_t *);
 int ec_datagram_prealloc(ec_datagram_t *, size_t);
 void ec_datagram_zero(ec_datagram_t *);
+int ec_datagram_repeat(ec_datagram_t *, const ec_datagram_t *);
 
 int ec_datagram_aprd(ec_datagram_t *, uint16_t, uint16_t, size_t);
 int ec_datagram_apwr(ec_datagram_t *, uint16_t, uint16_t, size_t);

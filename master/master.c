@@ -221,6 +221,7 @@ int ec_master_init(ec_master_t *master, /**< EtherCAT master */
 
     master->app_time = 0ULL;
     master->dc_ref_time = 0ULL;
+    master->dc_offset_valid = 0;
 
     master->scan_busy = 0;
     master->scan_index = 0;
@@ -620,7 +621,8 @@ int ec_master_thread_start(
         const char *name /**< Thread name. */
         )
 {
-    EC_MASTER_INFO(master, "Starting %s thread.\n", name);
+    EC_MASTER_INFO(master, "Starting %s thread (build-marker: lib-refclk-quiet-v16).\n",
+            name);
     master->thread = kthread_create(thread_func, master, name);
     if (IS_ERR(master->thread)) {
         int err = (int) PTR_ERR(master->thread);
@@ -965,6 +967,13 @@ ec_datagram_t *ec_master_get_external_datagram(
             master->ext_ring_idx_rt) {
         ec_datagram_t *datagram =
             &master->ext_datagram_ring[master->ext_ring_idx_fsm];
+        /* Record the time the slot is handed out so
+         * ec_master_inject_external_datagrams() can later time out a
+         * datagram based on how long it has been waiting to be injected. */
+#ifdef EC_HAVE_CYCLES
+        datagram->cycles_sent = get_cycles();
+#endif
+        datagram->jiffies_sent = jiffies;
         return datagram;
     }
     else {
@@ -1001,8 +1010,34 @@ void ec_master_queue_datagram(
         }
     }
 
+    /* Skip datagrams marked invalid by a state function that had
+     * nothing to send this tick (e.g. the master's state_scan_slave
+     * wait loop). Queuing one would push a half-initialised frame
+     * onto the wire. */
+    if (datagram->state == EC_DATAGRAM_INVALID) {
+        return;
+    }
+
     list_add_tail(&datagram->queue, &master->datagram_queue);
     smp_store_release(&datagram->state, EC_DATAGRAM_QUEUED);
+}
+
+/****************************************************************************/
+
+/** Returns non-zero if any datagram in the main queue is still waiting for
+ * a response with the given EtherCAT working-counter index.
+ */
+static int index_in_use(ec_master_t *master, uint8_t index)
+{
+    ec_datagram_t *datagram;
+
+    list_for_each_entry(datagram, &master->datagram_queue, queue) {
+        if (datagram->state == EC_DATAGRAM_SENT
+                && datagram->index == index) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /****************************************************************************/
@@ -1039,6 +1074,7 @@ void ec_master_send_datagrams(
     unsigned long jiffies_sent;
     unsigned int frame_count, more_datagrams_waiting;
     struct list_head sent_datagrams;
+    uint8_t last_index;
 
 #ifdef EC_HAVE_CYCLES
     cycles_start = get_cycles();
@@ -1076,6 +1112,18 @@ void ec_master_send_datagrams(
                 break;
             }
 
+            /* Do not reuse the index of a datagram that is still pending a
+             * response; otherwise ec_master_receive_datagrams() cannot tell
+             * the old reply from the new request. */
+            last_index = master->datagram_index;
+            while (index_in_use(master, master->datagram_index)) {
+                if (++master->datagram_index == last_index) {
+                    EC_MASTER_ERR(master, "No free datagram index,"
+                            " sending delayed.\n");
+                    goto break_send;
+                }
+            }
+
             list_add_tail(&datagram->sent, &sent_datagrams);
             datagram->index = master->datagram_index++;
 
@@ -1106,6 +1154,7 @@ void ec_master_send_datagrams(
             cur_data += EC_DATAGRAM_FOOTER_SIZE;
         }
 
+break_send:
         if (list_empty(&sent_datagrams)) {
             EC_MASTER_DBG(master, 2, "nothing to send.\n");
             break;
@@ -1135,6 +1184,7 @@ void ec_master_send_datagrams(
             datagram->cycles_sent = cycles_sent;
 #endif
             datagram->jiffies_sent = jiffies_sent;
+            datagram->app_time_sent = master->app_time;
             list_del_init(&datagram->sent); // remove from sent queue
             smp_store_release(&datagram->state, EC_DATAGRAM_SENT);
         }
@@ -1306,6 +1356,12 @@ void ec_master_receive_datagrams(
 void ec_master_output_stats(ec_master_t *master /**< EtherCAT master */)
 {
     if (unlikely(jiffies - master->stats.output_jiffies >= HZ)) {
+        /* UNMATCHED/TIMED OUT datagrams are expected during a bus rescan
+         * because addresses are cleared mid-flight. Silence the syslog
+         * spam unless the user turned on debug output. */
+        if (master->scan_busy && master->debug_level == 0) {
+            return;
+        }
         master->stats.output_jiffies = jiffies;
 
         if (master->stats.timeouts) {
@@ -1489,8 +1545,14 @@ void ec_master_exec_slave_fsms(
         if (fsm->datagram->state == EC_DATAGRAM_INIT ||
                 fsm->datagram->state == EC_DATAGRAM_QUEUED ||
                 fsm->datagram->state == EC_DATAGRAM_SENT) {
-            // previous datagram was not sent or received yet.
-            // wait until next thread execution
+            /* Previous datagram was not sent or received yet. Wait for
+             * the next thread execution before touching any further
+             * FSM in the list. Skipping this slave and re-using the
+             * ring slot for the next FSM in the list races with the
+             * still-in-flight reply: the ring wraps, the old reply
+             * lands in a slot owned by a different slave, and
+             * scan/config reads garbage data (e.g. base_fmmu_count =
+             * 79). Match the Synapticon scheduler and just return. */
             return;
         }
 
@@ -1507,13 +1569,19 @@ void ec_master_exec_slave_fsms(
                 fsm->slave->ring_position);
 #endif
         if (ec_fsm_slave_exec(fsm, datagram)) {
-            // FSM consumed datagram
+            // FSM is still in progress; advance the ring index only if
+            // it actually consumed the slot. When the FSM was still
+            // waiting for a previously sent datagram, it marks the
+            // handed-out slot as invalid so it can be recycled without
+            // being mixed up with the in-flight one.
+            if (datagram->state != EC_DATAGRAM_INVALID) {
 #if DEBUG_INJECT
-            EC_MASTER_DBG(master, 1, "FSM consumed datagram %s\n",
-                    datagram->name);
+                EC_MASTER_DBG(master, 1, "FSM consumed datagram %s\n",
+                        datagram->name);
 #endif
-            master->ext_ring_idx_fsm =
-                (master->ext_ring_idx_fsm + 1) % EC_EXT_RING_SIZE;
+                master->ext_ring_idx_fsm =
+                    (master->ext_ring_idx_fsm + 1) % EC_EXT_RING_SIZE;
+            }
         }
         else {
             // FSM finished
@@ -1528,12 +1596,22 @@ void ec_master_exec_slave_fsms(
 
     while (master->fsm_exec_count < EC_EXT_RING_SIZE / 2
             && count < master->slave_count) {
-        if (ec_fsm_slave_is_ready(&master->fsm_slave->fsm)) {
+        /* Only schedule slaves that have work AND are not already being
+         * driven from the exec list; otherwise a slave whose state stays
+         * "busy" across ticks (state_config, state_sdo_request, ...) would
+         * be list_add()'d a second time, triggering a list_debug BUG at
+         * lib/list_debug.c:35. */
+        if (ec_fsm_slave_has_work(&master->fsm_slave->fsm)
+                && list_empty(&master->fsm_slave->fsm.list)) {
             datagram = ec_master_get_external_datagram(master);
 
             if (ec_fsm_slave_exec(&master->fsm_slave->fsm, datagram)) {
-                master->ext_ring_idx_fsm =
-                    (master->ext_ring_idx_fsm + 1) % EC_EXT_RING_SIZE;
+                // same guard: do not advance past a slot the FSM did not
+                // actually consume (mailbox FSM was still awaiting a reply).
+                if (datagram->state != EC_DATAGRAM_INVALID) {
+                    master->ext_ring_idx_fsm =
+                        (master->ext_ring_idx_fsm + 1) % EC_EXT_RING_SIZE;
+                }
                 list_add_tail(&master->fsm_slave->fsm.list,
                         &master->fsm_exec_list);
                 master->fsm_exec_count++;
@@ -1782,6 +1860,16 @@ static int ec_master_eoe_thread(void *priv_data)
         // actual EoE processing
         sth_to_send = 0;
         list_for_each_entry(eoe, &master->eoe_handlers, list) {
+            // Only run EoE in states that actually service mailbox traffic.
+            // Doing it in BOOT (or any unknown state) wastes bandwidth and
+            // can block the mailbox buffer that a pending FoE transfer
+            // needs.
+            uint8_t s = eoe->slave->current_state;
+            if (s != EC_SLAVE_STATE_PREOP
+                    && s != EC_SLAVE_STATE_SAFEOP
+                    && s != EC_SLAVE_STATE_OP) {
+                continue;
+            }
             ec_eoe_run(eoe);
             if (eoe->queue_datagram) {
                 sth_to_send = 1;
@@ -2192,7 +2280,7 @@ void ec_master_find_dc_ref_clock(
  */
 int ec_master_calc_topology_rec(
         ec_master_t *master, /**< EtherCAT master. */
-        ec_slave_t *port0_slave, /**< Slave at port 0. */
+        ec_slave_t *upstream_slave, /**< Slave at upstream port. */
         unsigned int *slave_position /**< Slave position. */
         )
 {
@@ -2204,10 +2292,10 @@ int ec_master_calc_topology_rec(
         3, 2, 0, 1
     };
 
-    slave->ports[0].next_slave = port0_slave;
+    slave->ports[slave->upstream_port].next_slave = upstream_slave;
 
-    port_index = 3;
-    while (port_index != 0) {
+    port_index = next_table[slave->upstream_port];
+    while (port_index != slave->upstream_port) {
         if (!slave->ports[port_index].link.loop_closed) {
             *slave_position = *slave_position + 1;
             if (*slave_position < master->slave_count) {
@@ -2238,9 +2326,16 @@ void ec_master_calc_topology(
         )
 {
     unsigned int slave_position = 0;
+    ec_slave_t *slave;
 
     if (master->slave_count == 0)
         return;
+
+    for (slave = master->slaves;
+            slave < master->slaves + master->slave_count;
+            slave++) {
+        ec_slave_calc_upstream_port(slave);
+    }
 
     if (ec_master_calc_topology_rec(master, NULL, &slave_position))
         EC_MASTER_ERR(master, "Failed to calculate bus topology.\n");
@@ -2301,17 +2396,28 @@ void ec_master_request_op(
 
     EC_MASTER_DBG(master, 1, "Requesting OP...\n");
 
-    // request OP for all configured slaves
+    /* Request OP for every configured slave and make sure its
+     * per-slave fsm_slave is out of state_idle so the next scheduler
+     * tick runs state_ready -> action_config. The per-slave FSM
+     * handles scan, ACK and the full or quick configuration itself. */
     for (i = 0; i < master->slave_count; i++) {
         slave = master->slaves + i;
         if (slave->config) {
             ec_slave_request_state(slave, EC_SLAVE_STATE_OP);
+            ec_fsm_slave_set_ready(&slave->fsm);
+            down(&master->config_sem);
+            master->config_busy = 1;
+            up(&master->config_sem);
         }
     }
 
     // always set DC reference clock to OP
     if (master->dc_ref_clock) {
         ec_slave_request_state(master->dc_ref_clock, EC_SLAVE_STATE_OP);
+        ec_fsm_slave_set_ready(&master->dc_ref_clock->fsm);
+        down(&master->config_sem);
+        master->config_busy = 1;
+        up(&master->config_sem);
     }
 }
 
@@ -2593,6 +2699,9 @@ int ecrt_master_deactivate(ec_master_t *master)
 
     if (!master->active) {
         EC_MASTER_WARN(master, "%s: Master not active.\n", __func__);
+        // still drop any configuration that was staged via slave_config()
+        // before the failed activation, so the next activate() starts fresh.
+        ec_master_clear_config(master);
         return -EINVAL;
     }
 
@@ -2932,6 +3041,7 @@ int ecrt_master_get_slave(ec_master_t *master, uint16_t slave_position,
         slave_info->ports[i].delay_to_next_dc =
             slave->ports[i].delay_to_next_dc;
     }
+    slave_info->upstream_port = slave->upstream_port;
 
     slave_info->al_state = slave->current_state;
     slave_info->error_flag = slave->error_flag;
@@ -2972,6 +3082,7 @@ int ecrt_master_state(const ec_master_t *master, ec_master_state_t *state)
     state->slaves_responding = 0U;
     state->al_states = 0;
     state->link_up = 0U;
+    state->scan_busy = master->scan_busy ? 1U : 0U;
 
     for (dev_idx = EC_DEVICE_MAIN; dev_idx < ec_master_num_devices(master);
             dev_idx++) {
@@ -3028,6 +3139,14 @@ int ecrt_master_reference_clock_time(const ec_master_t *master,
         return -EIO;
     }
 
+    if (!master->dc_offset_valid) {
+        /* Per-slave DC offsets still being written; the sync_datagram
+         * payload is meaningful only once they have all landed. Tell
+         * the application to back off rather than treating it as a
+         * hard I/O error. */
+        return -EAGAIN;
+    }
+
     // Get returned datagram time, transmission delay removed.
     *time = EC_READ_U32(master->sync_datagram.data) -
         master->dc_ref_clock->transmission_delay;
@@ -3039,12 +3158,16 @@ int ecrt_master_reference_clock_time(const ec_master_t *master,
 
 int ecrt_master_sync_reference_clock(ec_master_t *master)
 {
-    if (master->dc_ref_clock) {
-        EC_WRITE_U32(master->ref_sync_datagram.data, master->app_time);
-        ec_master_queue_datagram(master, &master->ref_sync_datagram);
-    } else {
+    if (!master->dc_ref_clock) {
         return -ENXIO;
     }
+    if (!master->dc_offset_valid) {
+        /* Per-slave DC offsets have not finished propagating yet; queueing
+         * the broadcast write would feed an inconsistent value to the bus. */
+        return -EAGAIN;
+    }
+    EC_WRITE_U32(master->ref_sync_datagram.data, master->app_time);
+    ec_master_queue_datagram(master, &master->ref_sync_datagram);
     return 0;
 }
 
@@ -3068,12 +3191,18 @@ int ecrt_master_sync_reference_clock_to(
 
 int ecrt_master_sync_slave_clocks(ec_master_t *master)
 {
-    if (master->dc_ref_clock) {
-        ec_datagram_zero(&master->sync_datagram);
-        ec_master_queue_datagram(master, &master->sync_datagram);
-    } else {
+    if (!master->dc_ref_clock) {
         return -ENXIO;
     }
+    if (!master->dc_offset_valid) {
+        /* Skip the FRMW until the per-slave offset write loop finishes;
+         * otherwise ecrt_master_reference_clock_time() races the
+         * sync_datagram and trips '-EIO Failed to get reference clock
+         * time' on the application side. */
+        return -EAGAIN;
+    }
+    ec_datagram_zero(&master->sync_datagram);
+    ec_master_queue_datagram(master, &master->sync_datagram);
     return 0;
 }
 

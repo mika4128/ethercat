@@ -116,8 +116,16 @@ LIBETHERCAT_1.6 {
 		ecrt_slave_config_state_timeout;
 } LIBETHERCAT_1.5.3;
 
+LIBETHERCAT_1.6.10 {
+	global:
+		ecrt_master_rescan;
+		ecrt_master_request_slave_state;
+		ecrt_sdo_info_get;
+		ecrt_sdo_get_info_entry;
+} LIBETHERCAT_1.6;
+
 LIBETHERCAT_1.7 {
 	global:
 		ecrt_master_sii_caching;
 		ecrt_slave_config_pdo_mode;
-} LIBETHERCAT_1.6;
+} LIBETHERCAT_1.6.10;

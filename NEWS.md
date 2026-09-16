@@ -25,6 +25,8 @@
 - Backported CCAT fixes from Beckhoff
 - Added macb (Cadence GEM / RP1) driver for kernel 6.18
 - Improved macb driver performance
+- Ported parallel per-slave scan/config, recoverable AL retry, and
+  Debian packaging from our 1.6 line.
 
 ## Version 1.6.9
 

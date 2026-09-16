@@ -149,7 +149,8 @@ Command::Command(const string &name, const string &briefDesc):
     briefDesc(briefDesc),
     verbosity(Normal),
     emergency(false),
-    force(false)
+    force(false),
+    reset(false)
 {
 }
 
@@ -213,6 +214,13 @@ void Command::setEmergency(bool e)
 void Command::setForce(bool f)
 {
     force = f;
+};
+
+/****************************************************************************/
+
+void Command::setReset(bool r)
+{
+    reset = r;
 };
 
 /****************************************************************************/

@@ -112,35 +112,26 @@ void ec_fsm_foe_clear(ec_fsm_foe_t *fsm /**< finite state machine */)
 
 /** Executes the current state of the state machine.
  *
- * \return 1, if the datagram was used, else 0.
+ * \return 1 if the state machine is still in progress, else 0.
  */
 int ec_fsm_foe_exec(
         ec_fsm_foe_t *fsm, /**< finite state machine */
         ec_datagram_t *datagram /**< Datagram to use. */
         )
 {
-    int datagram_used = 0;
-
-    if (fsm->datagram &&
-            (fsm->datagram->state == EC_DATAGRAM_INIT ||
-             fsm->datagram->state == EC_DATAGRAM_QUEUED ||
-             fsm->datagram->state == EC_DATAGRAM_SENT)) {
-        // datagram not received yet
-        return datagram_used;
+    if (fsm->state == ec_fsm_foe_end || fsm->state == ec_fsm_foe_error) {
+        return 0;
     }
 
     fsm->state(fsm, datagram);
 
-    datagram_used =
-        fsm->state != ec_fsm_foe_end && fsm->state != ec_fsm_foe_error;
-
-    if (datagram_used) {
-        fsm->datagram = datagram;
-    } else {
+    if (fsm->state == ec_fsm_foe_end || fsm->state == ec_fsm_foe_error) {
         fsm->datagram = NULL;
+        return 0;
     }
 
-    return datagram_used;
+    fsm->datagram = datagram;
+    return 1;
 }
 
 /****************************************************************************/
@@ -283,8 +274,10 @@ int ec_foe_prepare_wrq_send(
         return -1;
     }
 
-    EC_WRITE_U16( data, EC_FOE_OPCODE_WRQ); // fsm write request
-    EC_WRITE_U32( data + 2, fsm->tx_packet_no );
+    EC_WRITE_U16(data, EC_FOE_OPCODE_WRQ); // fsm write request
+    // The 4-byte field after the opcode is the FoE password on WRQ/RRQ
+    // (ETG.1000.6). Forward what the caller provided in the request.
+    EC_WRITE_U32(data + 2, fsm->request->password);
 
     memcpy(data + EC_FOE_HEADER_SIZE, fsm->tx_filename, current_size);
 
@@ -556,7 +549,7 @@ int ec_foe_prepare_rrq_send(
     }
 
     EC_WRITE_U16(data, EC_FOE_OPCODE_RRQ); // fsm read request
-    EC_WRITE_U32(data + 2, 0x00000000); // no passwd
+    EC_WRITE_U32(data + 2, fsm->request->password); // password
     memcpy(data + EC_FOE_HEADER_SIZE, fsm->rx_filename, current_size);
 
     if (fsm->slave->master->debug_level) {

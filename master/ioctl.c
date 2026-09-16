@@ -239,7 +239,9 @@ static ATTRIBUTES int ec_ioctl_slave(
     if (!(slave = ec_master_find_slave_const(
                     master, 0, data.position))) {
         up(&master->master_sem);
-        EC_MASTER_ERR(master, "Slave %u does not exist!\n", data.position);
+        /* The userspace library calls this ioctl to probe for the
+         * presence of a slave; keep the miss out of the regular log. */
+        EC_MASTER_DBG(master, 1, "Slave %u does not exist!\n", data.position);
         return -EINVAL;
     }
 
@@ -268,6 +270,7 @@ static ATTRIBUTES int ec_ioctl_slave(
         data.ports[i].link.loop_closed = slave->ports[i].link.loop_closed;
         data.ports[i].link.signal_detected =
             slave->ports[i].link.signal_detected;
+        data.ports[i].link.bypassed = slave->ports[i].link.bypassed;
         data.ports[i].receive_time = slave->ports[i].receive_time;
         if (slave->ports[i].next_slave) {
             data.ports[i].next_slave =
@@ -277,6 +280,7 @@ static ATTRIBUTES int ec_ioctl_slave(
         }
         data.ports[i].delay_to_next_dc = slave->ports[i].delay_to_next_dc;
     }
+    data.upstream_port = slave->upstream_port;
     data.fmmu_bit = slave->base_fmmu_bit_operation;
     data.dc_supported = slave->base_dc_supported;
     data.dc_range = slave->base_dc_range;
@@ -284,6 +288,7 @@ static ATTRIBUTES int ec_ioctl_slave(
     data.transmission_delay = slave->transmission_delay;
     data.al_state = slave->current_state;
     data.error_flag = slave->error_flag;
+    data.ready = ec_fsm_slave_is_ready(&slave->fsm);
 
     data.sync_count = slave->sii.sync_count;
     data.sdo_count = ec_slave_sdo_count(slave);
@@ -730,6 +735,7 @@ static ATTRIBUTES int ec_ioctl_slave_sdo(
 
     data.sdo_index = sdo->index;
     data.max_subindex = sdo->max_subindex;
+    data.object_code = sdo->object_code;
     ec_ioctl_strcpy(data.name, sdo->name);
 
     up(&master->master_sem);
@@ -2036,10 +2042,19 @@ static ATTRIBUTES int ec_ioctl_deactivate(
         ec_ioctl_context_t *ctx /**< Private data structure of file handle. */
         )
 {
+    int ret;
+
     if (unlikely(!ctx->requested))
         return -EPERM;
 
-    return ecrt_master_deactivate(master);
+    ret = ecrt_master_deactivate(master);
+
+    if (ctx->process_data_size && ctx->process_data != NULL) {
+        vfree(ctx->process_data);
+        ctx->process_data = NULL;
+        ctx->process_data_size = 0;
+    }
+    return ret;
 }
 
 /****************************************************************************/
@@ -4674,12 +4689,13 @@ static ATTRIBUTES int ec_ioctl_slave_foe_read(
     }
 
     ec_foe_request_init(&request, io.file_name);
-    ret = ec_foe_request_alloc(&request, 10000); // FIXME
+    ret = ec_foe_request_alloc(&request, io.buffer_size);
     if (ret) {
         ec_foe_request_clear(&request);
         return ret;
     }
 
+    request.password = io.password;
     ec_foe_request_read(&request);
 
     if (down_interruptible(&master->master_sem)) {
@@ -4784,6 +4800,7 @@ static ATTRIBUTES int ec_ioctl_slave_foe_write(
     }
 
     request.data_size = io.buffer_size;
+    request.password = io.password;
     ec_foe_request_write(&request);
 
     if (down_interruptible(&master->master_sem)) {

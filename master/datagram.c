@@ -94,6 +94,7 @@ void ec_datagram_init(ec_datagram_t *datagram /**< EtherCAT datagram. */)
     datagram->cycles_sent = 0;
 #endif
     datagram->jiffies_sent = 0;
+    datagram->app_time_sent = 0;
 #ifdef EC_HAVE_CYCLES
     datagram->cycles_received = 0;
 #endif
@@ -178,6 +179,29 @@ int ec_datagram_prealloc(
 void ec_datagram_zero(ec_datagram_t *datagram /**< EtherCAT datagram. */)
 {
     memset(datagram->data, 0x00, datagram->data_size);
+}
+
+/****************************************************************************/
+
+/** Copies a previously constructed datagram into a fresh slot for a repeat
+ * send (typically after the original timed out without a reply).
+ *
+ * \return Return value of ec_datagram_prealloc().
+ */
+int ec_datagram_repeat(
+        ec_datagram_t *datagram, /**< EtherCAT datagram to update. */
+        const ec_datagram_t *source /**< EtherCAT datagram to copy. */
+        )
+{
+    int ret;
+    size_t data_size = source->data_size;
+    EC_FUNC_HEADER;
+    if (datagram != source) {
+        datagram->type = source->type;
+        memcpy(datagram->address, source->address, sizeof(datagram->address));
+        memcpy(datagram->data, source->data, data_size);
+    }
+    EC_FUNC_FOOTER;
 }
 
 /****************************************************************************/

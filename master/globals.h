@@ -34,8 +34,23 @@
  * EtherCAT master
  ****************************************************************************/
 
-/** Datagram timeout in microseconds. */
-#define EC_IO_TIMEOUT 500
+/** Datagram timeout in microseconds.
+ *
+ * Matches Synapticon's A09 patch ("Increase the EC IO timeout to
+ * 100ms"). Pairs with reverting our v5 broad error_flag-clear
+ * patch: with the broad clear the master kept retrying slave 0
+ * indefinitely so a long timeout gave the head-of-line ring slot
+ * enough headroom to wrap the ring twice and zombify everyone
+ * behind it; without that retry, slave 0 fails once and is
+ * dropped, so the longer ceiling buys the downstream slaves time
+ * to ride out the chain stall the misbehaving slave introduces.
+ *
+ * Cyclic process-data round-trips run < 100 us, so the longer
+ * ceiling only changes how long the master cleanup loop waits
+ * before declaring an unresponsive datagram dead, not the normal
+ * hot path.
+ */
+#define EC_IO_TIMEOUT 100000
 
 /** Time to send a byte in nanoseconds.
  *
@@ -45,6 +60,9 @@
 
 /** Number of state machine retries on datagram timeout. */
 #define EC_FSM_RETRIES 3
+
+/** Cap on recoverable AL state rejections per slave configuration attempt. */
+#define EC_FSM_CONFIG_RETRIES 5
 
 /** Seconds to wait before fetching SDO dictionary
     after slave entered PREOP state. */
@@ -265,7 +283,7 @@ unsigned int ec_master_count(void);
 void ec_print_data(const uint8_t *, size_t);
 void ec_print_data_diff(const uint8_t *, const uint8_t *, size_t);
 size_t ec_state_string(uint8_t, char *, uint8_t);
-ssize_t ec_mac_print(const uint8_t *, char *);
+size_t ec_mac_print(const uint8_t *, char *);
 int ec_mac_is_zero(const uint8_t *);
 
 ec_master_t *ecrt_request_master_err(unsigned int);
