@@ -1,11 +1,13 @@
 #!/bin/bash
-# build-t153-deb.sh — T153 预编译 armhf 安装包 (无 DKMS: 板无 kernel-headers,
-# 内核版本固定 5.10.198-rt97-9i60a1, 模块交叉编好直接装 /lib/modules/.../extra/).
-# 普通平台 (Intel NIC 等) 用仓库自带 debian/ 的 DKMS 流程, 本脚本仅服务 sunxi T153.
+# build-t153-deb.sh — 全志 (sunxi) 预编译 armhf 安装包 (无 DKMS: 板无 kernel-headers,
+# 模块交叉编好直接装 /lib/modules/<KVER>/extra/). KVER 从 .ko 的 vermagic 自动推导,
+# 所以同一脚本能对**不同内核**的 OUT 打出对应 deb (见下方 KVER 段 + t153-guide.md §4).
+# 普通平台 (Intel NIC 等) 用仓库自带 debian/ 的 DKMS 流程, 本脚本仅服务 sunxi 全志板.
 #
 # 前置: 已跑 build_branch.sh (交叉 configure + make install + kbuild), OUT 含
 #       userspace/ + modules/ (7 个 .ko) + ec_wkc_test.
 # usage: build-t153-deb.sh <checkout> <OUT>
+# 可选: KVER=<ver> 环境变量覆盖自动推导 (默认从 ec_master.ko vermagic 取).
 #
 # 产物: deb_armhf/{ethercat-t153-modules,libethercat,libethercat-dev,ethercat-t153}_*.deb
 # 新板安装: scp deb_armhf/*.deb mika@<board>:/tmp/ && sudo dpkg -i /tmp/*.deb && reboot
@@ -14,7 +16,6 @@ set -e
 
 WT=$1
 OUT=$2
-KVER=5.10.198-rt97-9i60a1
 ARCH=armhf
 ECVER=$(grep -m1 AC_INIT $WT/configure.ac | sed -n 's/.*AC_INIT(\[ethercat\], \[\([^]]*\)\].*/\1/p')
 [ -n "$ECVER" ] || { echo "cannot determine version from configure.ac"; exit 1; }
@@ -28,6 +29,17 @@ for ko in stmmac stmmac-platform dwmac-sunxi dwmac-sun8i dwmac-generic ec_master
     [ -f $OUT/modules/$ko.ko ] || { echo "missing $OUT/modules/$ko.ko (run build first)"; exit 1; }
 done
 [ -d $OUT/userspace/lib ] || { echo "missing $OUT/userspace (run build first)"; exit 1; }
+
+# ---------- KVER: 内核版本 (deb 装到 /lib/modules/<KVER>/extra, postinst depmod <KVER>) ----------
+# 从模块 vermagic 自动推导 (= .ko 交叉编译时针对的内核版本). 构建机无 modinfo,
+# 用 strings 读 vermagic 串, 取第一个 token (形如 5.10.198-rt97-9i60a1).
+# 换内核 = 换 OUT (指向该内核的 build_branch 产物), 脚本自动跟. 可用 KVER=<v> 覆盖.
+if [ -z "$KVER" ]; then
+    KVER=$(strings -n 8 "$OUT/modules/ec_master.ko" | grep -m1 vermagic \
+        | sed -n 's/.*vermagic[=: ]*\([0-9][^ ]*\).*/\1/p')
+fi
+[ -n "$KVER" ] || { echo "cannot derive KVER from $OUT/modules/ec_master.ko (set KVER=<ver>)"; exit 1; }
+echo "KVER (from module vermagic): $KVER"
 
 rm -rf "$OUT_DIR" "$PKG_DIR"
 mkdir -p "$OUT_DIR" "$PKG_DIR"

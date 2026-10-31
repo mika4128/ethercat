@@ -213,6 +213,7 @@ WKC=0"。排查第一步永远看 `online` flag,不要直接怀疑总线。
 | update-t153.sh | **本目录** | 再生 5.10 文件对 |
 | patches/0001-t153-ecdev.patch | **本目录** | EC hook 全量 diff |
 | build-t153-deb.sh | **仓库根目录** | T153 预编译 deb 打包 (§8) |
+| t153-guide.md | **本目录** | 网口配置 / Intel 对比 / 全志芯片 / 跨内核 deb (用户说明) |
 
 ## 8. 打包 / 新板安装 (T153 预编译 deb)
 
