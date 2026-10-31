@@ -47,6 +47,57 @@ ifeq (@ENABLE_DRIVER_RESOURCE_VERIFYING@,1)
 endif
 
 ifeq (@ENABLE_STMMAC@,1)
+ifeq (@KERNEL_STMMAC@,5.10)
+
+#-----------------------------------------------------------------------------
+# T153 SDK linux-5.10-rt (sunxi BSP): platform driver stack.
+# Stock module names — drop-in replacement for the SDK stmmac modules
+# (modules-load.d "sunxi-stmmac" stays a BSP stock module, untouched).
+# Only the stmmac core carries the EtherCAT hooks (stmmac_main + stmmac.h,
+# see the -5.10-ethercat pair); the glue modules are pristine SDK copies.
+# ecdev.h resolves via "../ecdev.h" (devices/ecdev.h, shared driver API).
+#-----------------------------------------------------------------------------
+
+obj-m += stmmac.o \
+	stmmac-platform.o \
+	dwmac-sunxi.o \
+	dwmac-sun8i.o \
+	dwmac-generic.o
+
+stmmac-objs := \
+	stmmac_main-5.10-ethercat.o \
+	stmmac_ethtool-5.10-ethercat.o \
+	stmmac_mdio-5.10-ethercat.o \
+	ring_mode-5.10-ethercat.o \
+	chain_mode-5.10-ethercat.o \
+	dwmac_lib-5.10-ethercat.o \
+	dwmac1000_core-5.10-ethercat.o \
+	dwmac1000_dma-5.10-ethercat.o \
+	dwmac100_core-5.10-ethercat.o \
+	dwmac100_dma-5.10-ethercat.o \
+	enh_desc-5.10-ethercat.o \
+	norm_desc-5.10-ethercat.o \
+	mmc_core-5.10-ethercat.o \
+	stmmac_hwtstamp-5.10-ethercat.o \
+	stmmac_ptp-5.10-ethercat.o \
+	dwmac4_descs-5.10-ethercat.o \
+	dwmac4_dma-5.10-ethercat.o \
+	dwmac4_lib-5.10-ethercat.o \
+	dwmac4_core-5.10-ethercat.o \
+	dwmac5-5.10-ethercat.o \
+	hwif-5.10-ethercat.o \
+	stmmac_tc-5.10-ethercat.o \
+	dwxgmac2_core-5.10-ethercat.o \
+	dwxgmac2_dma-5.10-ethercat.o \
+	dwxgmac2_descs-5.10-ethercat.o
+
+stmmac-platform-objs := stmmac_platform-5.10-ethercat.o
+dwmac-sunxi-objs := dwmac-sunxi-5.10-ethercat.o
+dwmac-sun8i-objs := dwmac-sun8i-5.10-ethercat.o
+dwmac-generic-objs := dwmac-generic-5.10-ethercat.o
+
+ccflags-y += -Wno-error=declaration-after-statement
+else
 EC_STMMAC_OBJS := \
 		chain_mode-@KERNEL_STMMAC@-ethercat.o \
 		dwmac1000_core-@KERNEL_STMMAC@-ethercat.o \
@@ -96,6 +147,7 @@ ifeq (@ENABLE_STMMACPCI@,1)
 		$(EC_STMMAC_OBJS) \
 		stmmac_pci-@KERNEL_STMMAC@-ethercat.o
 endif
+endif  # @KERNEL_STMMAC@ != 5.10
 endif
 
 KBUILD_EXTRA_SYMBOLS := \
