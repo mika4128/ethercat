@@ -212,3 +212,74 @@ WKC=0"。排查第一步永远看 `online` flag,不要直接怀疑总线。
 | ec_wkc_test.c | 同上 | 验收 (§4) |
 | update-t153.sh | **本目录** | 再生 5.10 文件对 |
 | patches/0001-t153-ecdev.patch | **本目录** | EC hook 全量 diff |
+| build-t153-deb.sh | **仓库根目录** | T153 预编译 deb 打包 (§8) |
+
+## 8. 打包 / 新板安装 (T153 预编译 deb)
+
+T153 板无 kernel headers 且内核版本固定 (5.10.198-rt97-9i60a1) → DKMS 流程不适用
+(装时重编需要 headers)。T153 用 **预编译 armhf deb** (`build-t153-deb.sh`, 仓库根目录),
+4 个包:
+
+| 包 | 内容 |
+|---|---|
+| `ethercat-t153-modules` | 7 .ko → `/lib/modules/$KVER/extra/` + conffiles: `/etc/modprobe.d/90-igh-ec.conf` (选口 main_devices) + `/etc/modules-load.d/90-igh-ec.conf` (开机链触发 sunxi-stmmac) |
+| `libethercat` | libethercat.so.1 运行时库 |
+| `libethercat-dev` | ecrt.h 头 + libethercat.a 静态库 |
+| `ethercat-t153` | ethercat CLI + ethercatctl + init.d + conffiles: `/etc/sysconfig/ethercat` + `/etc/ethercat.conf` (MASTER0_DEVICE) |
+
+### 构建
+
+```
+# 前置: build_branch.sh 已产出 OUT (userspace/ + modules/ 7 件 .ko + ec_wkc_test)
+bash build-t153-deb.sh ~/T153/ethercat-1.7 $OUT
+# 产物: <checkout>/deb_armhf/*.deb
+```
+
+### 新板安装 (三步)
+
+```
+scp deb_armhf/*.deb mika@<board>:/tmp/
+ssh mika@<board> 'sudo dpkg -i /tmp/*.deb'
+sudo reboot   # 或同一条 ssh 里 && sudo reboot
+```
+
+重启后: end0 被 claim, `ethercat slaves` 应列出从站。
+注: 板 `/tmp` 是 tmpfs, reboot 全清 — dpkg -i 必须在 reboot 前完成。
+
+### 换 EtherCAT 口
+
+两个 conffile 同步改 (必须同一个 MAC):
+1. `/etc/modprobe.d/90-igh-ec.conf` — `options ec_master main_devices=<MAC>` (内核选口)
+2. `/etc/sysconfig/ethercat` — `MASTER0_DEVICE=<MAC>` (用户态)
+
+T153: end0 = 02:00:15:fc:91:e1, end1 = 12:00:15:fc:91:e1。
+勿在 `/etc/modprobe.d/` 另建第二个写 options ec_master 的文件 (modprobe 按字母序合并, 后者覆盖)。
+回退普通网卡: 删两个 conffile (或 main_devices 留空) → stmmac 全部保持普通网卡。
+
+### 旧 sncn13 代包 (ethercat-master) 迁移
+
+板上若装有旧 `ethercat-master` / `ethercat-master-modules` (1.5.2+sncn13-t153), 其
+`/etc/ethercat.conf`、`/usr/bin/ethercat` 等文件属主会与新主包冲突 — 先除旧再装新:
+
+```
+sudo dpkg -r ethercat-master ethercat-master-modules
+sudo dpkg -i --force-confnew /tmp/*.deb
+```
+
+(`--force-confnew` = conffile 一律取包内新版; 旧 CLI 与新内核主站 ioctl 版本不兼容, 必须换新。)
+
+### 内核代际纪律 (MODVERSIONS)
+
+包内 .ko 绑定 5.10.198-rt97-9i60a1, 与 BSP stock 4 件 (sunxi-stmmac / stmmac-platform /
+phylink / mdio-mux, **不在包内**, 用板原代) 的兼容闸门 = 新旧 .ko `__versions` 逐符号 CRC
+比对 (见 §2)。SDK 重编内核后必须重建 + 重打包, 不得混装不同代。
+
+### 其他全志芯片
+
+5.10 文件对含 dwmac-sunxi / dwmac-sun8i / dwmac-generic 三套 glue, 按 DT compatible 绑模块。
+同内核版本的其他全志 5.10 板 (T113 / sun8i 系) 直接装同一 deb, 只改 conffile 里的 MAC。
+
+### 普通平台 (Intel 网卡等)
+
+不用这些 deb。普通平台走仓库自带 `debian/` 的 **DKMS 流程** (装时对本机内核重编,
+generic/igc 驱动, 与本 T153 native 预编译包无关)。
