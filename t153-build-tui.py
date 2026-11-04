@@ -659,5 +659,34 @@ class IghBuildApp(App):
             pass
 
 
+async def _selftest() -> int:
+    """--selftest: headless 自检 (不真编译), 验 compose/检测/configure 预览/输入刷新。
+    环境无关 — 在 Windows 或 .125 都过, 只需 textual 装好。"""
+    from textual.widgets import Label, Static, Input
+    app = IghBuildApp()
+    async with app.run_test(size=(150, 45)) as pilot:
+        await pilot.pause(0.3)
+        checks: list[tuple[bool, str]] = []
+        cmd = str(app.query_one("#o-cmd", Label).content)
+        checks.append(("--host" in cmd and "--with-linux-dir" in cmd,
+                       "configure 预览已拼 (--host/--with-linux-dir)"))
+        det = str(app.query_one("#s-detect", Static).content)
+        checks.append(("目标内核" in det, "全志检测页已填充"))
+        mat = str(app.query_one("#s-matrix", Static).content)
+        checks.append(("T153" in mat and "H3" in mat, "全志支持矩阵渲染"))
+        checks.append((any("TUI" in l for l in app.log_lines), "日志 banner 写入"))
+        app.query_one("#o-host", Input).value = "test-host-xyz"
+        await pilot.pause(0.1)
+        new = str(app.query_one("#o-cmd", Label).content)
+        checks.append(("test-host-xyz" in new, "输入变更 → 命令实时刷新"))
+        ok = True
+        for passed, name in checks:
+            print(f"  {'PASS' if passed else 'FAIL'}  {name}")
+            ok = ok and passed
+        return 0 if ok else 1
+
+
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(asyncio.run(_selftest()))
     IghBuildApp().run()
