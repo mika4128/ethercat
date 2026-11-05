@@ -25,7 +25,7 @@ override_dh_auto_configure:
 		--prefix=/usr \
 		--sysconfdir=/etc \
 		--localstatedir=/var \
-		--with-systemdsystemunitdir=/lib/systemd/system \
+		--with-systemdsystemunitdir=/usr/lib/systemd/system \
 		--disable-kernel \
 		--disable-8139too \
 		--disable-eoe \

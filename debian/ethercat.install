@@ -3,4 +3,4 @@ usr/sbin/ethercatctl
 usr/share/bash-completion/completions/*
 etc/ethercat.conf
 etc/init.d/ethercat
-lib/systemd/system/ethercat.service
+usr/lib/systemd/system/ethercat.service
