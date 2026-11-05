@@ -38,6 +38,7 @@ void ec_fsm_slave_state_idle(ec_fsm_slave_t *, ec_datagram_t *);
 void ec_fsm_slave_state_ready(ec_fsm_slave_t *, ec_datagram_t *);
 int ec_fsm_slave_action_scan(ec_fsm_slave_t *, ec_datagram_t *);
 void ec_fsm_slave_state_scan(ec_fsm_slave_t *, ec_datagram_t *);
+void ec_fsm_slave_state_scan_retry(ec_fsm_slave_t *, ec_datagram_t *);
 void ec_fsm_slave_state_acknowledge(ec_fsm_slave_t *, ec_datagram_t *);
 void ec_fsm_slave_state_config(ec_fsm_slave_t *, ec_datagram_t *);
 int ec_fsm_slave_action_process_sdo(ec_fsm_slave_t *, ec_datagram_t *);
@@ -157,8 +158,18 @@ int ec_fsm_slave_exec(
         )
 {
     int datagram_used;
+    ec_datagram_t *previous = fsm->datagram;
 
     fsm->state(fsm, datagram);
+
+    /* A sub-FSM that is still waiting on an older datagram marks the
+     * fresh slot invalid. Keep the in-flight pointer, otherwise the
+     * scheduler treats this slave as idle and the ring reuses the slot
+     * the reply is still heading for. */
+    if (datagram && datagram->state == EC_DATAGRAM_INVALID
+            && previous && previous != datagram) {
+        return 1;
+    }
 
     datagram_used = fsm->state != ec_fsm_slave_state_idle &&
         fsm->state != ec_fsm_slave_state_ready;
@@ -253,6 +264,23 @@ void ec_fsm_slave_state_scan(
         return;
     }
 
+    /* A failed scan used to clear scan_required and leave error_flag
+     * set, so the master never tried again and the slave stayed
+     * "INIT E 0x00000000:0x00000000" until the next reboot allocated
+     * new slave objects. Retry while the identity is still unknown. */
+    if (!ec_fsm_slave_scan_success(&fsm->fsm_slave_scan)
+            && !slave->sii.vendor_id
+            && fsm->fsm_slave_scan.scan_restarts < 4) {
+        fsm->fsm_slave_scan.scan_restarts++;
+        slave->error_flag = 0;
+        EC_SLAVE_WARN(slave, "Scan produced no identity, retry %u/4.\n",
+                fsm->fsm_slave_scan.scan_restarts);
+        fsm->fsm_slave_scan.scan_jiffies_start = jiffies;
+        fsm->state = ec_fsm_slave_state_scan_retry;
+        datagram->state = EC_DATAGRAM_INVALID;
+        return;
+    }
+
 #ifdef EC_EOE
     if (slave->sii.mailbox_protocols & EC_MBOX_EOE) {
         ec_master_t *master = slave->master;
@@ -272,6 +300,33 @@ void ec_fsm_slave_state_scan(
     // starting configuration.
     slave->scan_required = 0;
     fsm->state = ec_fsm_slave_state_idle;
+}
+
+/****************************************************************************/
+
+/** Slave state: SCAN RETRY.
+ *
+ * Back off and run the scan again. Used when the first pass ended
+ * before the SII identity was stored.
+ */
+void ec_fsm_slave_state_scan_retry(
+        ec_fsm_slave_t *fsm, /**< Slave state machine. */
+        ec_datagram_t *datagram /**< Datagram to use. */
+        )
+{
+    unsigned long diff_ms =
+        (jiffies - fsm->fsm_slave_scan.scan_jiffies_start) * 1000 / HZ;
+
+    if (diff_ms < 200) {
+        datagram->state = EC_DATAGRAM_INVALID;
+        return;
+    }
+
+    fsm->slave->error_flag = 0;
+    fsm->slave->scan_required = 1;
+    ec_fsm_slave_scan_start(&fsm->fsm_slave_scan);
+    fsm->state = ec_fsm_slave_state_scan;
+    fsm->state(fsm, datagram);
 }
 
 /****************************************************************************/

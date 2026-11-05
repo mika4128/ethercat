@@ -57,6 +57,8 @@ struct ec_fsm_slave_scan
     ec_fsm_pdo_t *fsm_pdo; /**< PDO configuration state machine to use. */
     unsigned int retries; /**< Retries on datagram timeout. */
     unsigned int scan_retries; /**< Retries on scan read error. */
+    unsigned int scan_restarts; /**< Full restarts after a scan with no
+                                  identity. Not cleared by scan_start. */
     unsigned long scan_jiffies_start; /**< Scan retry start timestamp. */
 
     void (*state)(ec_fsm_slave_scan_t *, ec_datagram_t *); /**< State function. */

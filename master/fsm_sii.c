@@ -193,10 +193,14 @@ static void ec_fsm_sii_prepare_read_check(
 {
     switch (fsm->mode) {
         case EC_FSM_SII_USE_INCREMENT_ADDRESS:
-            ec_datagram_aprd(datagram, fsm->slave->ring_position, 0x502, 10);
+            /* 0x0502..0x050F: control, address, and up to 8 data bytes.
+               Slaves with 0x0502.6 set return 4 words; a 10-byte read
+               drops the upper 4 bytes and the scan then skips ahead,
+               which corrupts mailbox addresses (AL 0x0016) and PDOs. */
+            ec_datagram_aprd(datagram, fsm->slave->ring_position, 0x502, 14);
             break;
         case EC_FSM_SII_USE_CONFIGURED_ADDRESS:
-            ec_datagram_fprd(datagram, fsm->slave->station_address, 0x502, 10);
+            ec_datagram_fprd(datagram, fsm->slave->station_address, 0x502, 14);
             break;
     }
 
@@ -319,7 +323,7 @@ void ec_fsm_sii_state_read_fetch(
 
 #ifdef SII_DEBUG
     EC_SLAVE_DBG(fsm->slave, 0, "checking SII read state:\n");
-    ec_print_data(fsm->datagram->data, 10);
+    ec_print_data(fsm->datagram->data, 14);
 #endif
 
     if (EC_READ_U8(fsm->datagram->data + 1) & 0x20) {

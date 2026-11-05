@@ -102,6 +102,7 @@ void ec_fsm_slave_scan_init(
     fsm->datagram = NULL;
     fsm->fsm_slave_config = fsm_slave_config;
     fsm->fsm_pdo = fsm_pdo;
+    fsm->scan_restarts = 0;
 
     // init sub state machines
     ec_fsm_sii_init(&fsm->fsm_sii);
@@ -688,10 +689,10 @@ void ec_fsm_slave_scan_state_sii_ident(
 
     words_fitting = EC_NUM_SII_IDENT_WORDS + EC_SII_WORD_OFFSET_VENDOR
         - fsm->sii_offset;
-    words_to_copy = fsm->fsm_sii.read_word_count;
-    if (!words_to_copy) {
-        words_to_copy = 2;
-    }
+    /* Step two words per read. Consuming a 4-word reply skips the next
+     * EEPROM words when the upper half is not the following address, and
+     * the identity stays 0:0. */
+    words_to_copy = 2;
     if (words_to_copy > words_fitting) {
         words_to_copy = words_fitting;
     }
@@ -857,10 +858,10 @@ void ec_fsm_slave_scan_state_sii_data(ec_fsm_slave_scan_t *fsm
     }
 
     words_fitting = slave->sii_page.word_count - fsm->sii_offset;
-    words_to_copy = fsm->fsm_sii.read_word_count;
-    if (!words_to_copy) {
-        words_to_copy = 2;
-    }
+    /* Same two-word step as 1.6.9. The 14-byte fetch still fills the
+     * register, but only the first two words are consumed so a slave
+     * with 0x0502.6 set cannot skip ahead. */
+    words_to_copy = 2;
     if (words_to_copy > words_fitting) {
         words_to_copy = words_fitting;
     }
