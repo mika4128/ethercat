@@ -725,6 +725,23 @@ AC_SUBST(HAS_R8169_LEDS, [$has_r8169_leds])
 
 enablestmmac=0
 
+AC_ARG_ENABLE([stmmac],
+    AS_HELP_STRING([--enable-stmmac],
+                   [Build stmmac platform driver (e.g. T153 5.10) [default=no]]),
+    [
+        case "${enableval}" in
+            yes) enablestmmac=1
+                ;;
+            no) enablestmmac=0
+                ;;
+            *) AC_MSG_ERROR([Invalid value for --enable-stmmac])
+                ;;
+        esac
+    ],
+    [enablestmmac=0]
+)
+
+
 AC_ARG_ENABLE([stmmac-pci],
     AS_HELP_STRING([--enable-stmmac-pci],
                    [Build stmmac driver [default=no]]),

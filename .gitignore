@@ -69,3 +69,4 @@ debian/autoreconf.before
 .vscode/
 .idea/
 *.code-workspace
+deb_armhf/
