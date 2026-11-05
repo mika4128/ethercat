@@ -20,6 +20,12 @@ Depends:
  ethercat-dkms (= ${source:Version}),
  iproute2,
  kmod
+# Take over the IgH/Debian package name. linuxcnc-ethercat depends on
+# "etherlabmaster | ethercat-master"; shipping a different name leaves that
+# dependency unsatisfied and collides on /usr/bin/ethercat.
+Replaces: ethercat-master
+Conflicts: ethercat-master
+Provides: ethercat-master, etherlabmaster
 Description: IgH EtherCAT master — userspace tools and services
  Command-line tool (ethercat), ethercatctl helper and systemd/sysvinit
  units for managing the IgH EtherCAT master at runtime.
@@ -54,7 +60,11 @@ Depends:
  dkms,
  make,
  gcc,
- libc6-dev | libc-dev
+ libc6-dev | libc-dev,
+ autoconf,
+ automake,
+ libtool,
+ pkg-config
 Recommends: linux-headers-generic | linux-headers-amd64 | linux-headers-arm64 | linux-headers
 Description: IgH EtherCAT master — kernel module source (DKMS)
  Source tree for the EtherCAT master and included network-card drivers,

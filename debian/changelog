@@ -1,3 +1,33 @@
+ethercat (1.7.0-4) unstable; urgency=medium
+
+  * Consume two SII words per read, as 1.6.9 did. Advancing by a 4-word
+    reply skipped EEPROM words, so the first scan stored no identity and
+    the slave stayed INIT E 0x00000000:0x00000000 until reboot.
+  * Retry a scan that finishes without a vendor id instead of latching
+    error_flag.
+  * Keep the in-flight datagram when a slave FSM is still waiting, so the
+    ring does not recycle the slot and each lost reply does not cost the
+    full IO timeout.
+
+ -- mika <mika-net@outlook.com>  Wed, 30 Sep 2026 03:50:00 -0400
+
+ethercat (1.7.0-3) unstable; urgency=medium
+
+  * Replace and provide ethercat-master / etherlabmaster so the tools
+    package installs over the IgH packages without a file conflict and
+    still satisfies linuxcnc-ethercat.
+  * Declare the autoconf tools the DKMS build actually runs.
+
+ -- mika <mika-net@outlook.com>  Wed, 30 Sep 2026 03:20:00 -0400
+
+ethercat (1.7.0-2) unstable; urgency=medium
+
+  * Read 14 bytes of SII data when the slave returns 4 words.
+    The 1.7 merge kept the 10-byte fetch, so mailbox configuration and
+    PDO mapping were built from a truncated EEPROM image.
+
+ -- mika <mika-net@outlook.com>  Tue, 29 Sep 2026 03:12:00 -0400
+
 ethercat (1.7.0) unstable; urgency=medium
 
   * Rebase on official stable-1.7 (SII cache, PDO mode, ioctl 43).
