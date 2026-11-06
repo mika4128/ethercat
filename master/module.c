@@ -88,6 +88,12 @@ MODULE_PARM_DESC(run_on_cpu, "Bind kthreads to a specific cpu");
 module_param(sii_caching, uint, S_IRUGO);
 MODULE_PARM_DESC(sii_caching, "SII caching mode (default=0=off)");
 
+int thread_prio = 0;
+module_param(thread_prio, int, S_IRUGO);
+MODULE_PARM_DESC(thread_prio, "Enable SCHED_FIFO (MAX_RT_PRIO/2) for the "
+        "master kernel threads (>0 = on, 0 = keep SCHED_NORMAL); the exact "
+        "value is ignored (kernel does not export sched_setscheduler_nocheck)");
+
 /** \endcond */
 
 /****************************************************************************/

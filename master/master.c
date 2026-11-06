@@ -44,6 +44,8 @@
 #include "device.h"
 #include "datagram.h"
 #include "smp.h"
+#include <linux/sched.h> // sched_set_fifo, set_cpus_allowed_ptr, MAX_RT_PRIO
+#include <linux/cpumask.h> // cpumask_of
 
 #ifdef EC_EOE
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
@@ -1634,6 +1636,34 @@ void ec_master_exec_slave_fsms(
 
 /****************************************************************************/
 
+extern int thread_prio;
+
+/* The 5.10-rt kthread() implementation (kernel/kthread.c) resets every
+ * kthread to SCHED_NORMAL and to the kthread_cpus mask (housekeeping)
+ * before the thread function runs, so a kthread_bind() issued before
+ * wake_up_process() does not survive. Apply the intended scheduler
+ * policy and cpu affinity at thread-function entry instead. */
+static void ec_master_thread_self_config(ec_master_t *master)
+{
+    if (thread_prio > 0) {
+        /* This 5.10-rt kernel does not export sched_setscheduler_nocheck(),
+         * so a module cannot set an arbitrary RT priority. sched_set_fifo()
+         * gives SCHED_FIFO at MAX_RT_PRIO/2, which is enough when the
+         * thread runs on an isolated cpu without higher-prio tasks or
+         * irqs. */
+        sched_set_fifo(current);
+        EC_MASTER_INFO(master, "Master thread at SCHED_FIFO (MAX_RT_PRIO/2 = %d).\n",
+                MAX_RT_PRIO / 2);
+    }
+    if (0xffffffff != master->run_on_cpu) {
+        set_cpus_allowed_ptr(current, cpumask_of(master->run_on_cpu));
+        EC_MASTER_INFO(master, "Master thread bound to cpu %u.\n",
+                master->run_on_cpu);
+    }
+}
+
+/****************************************************************************/
+
 /** Master kernel thread function for IDLE phase.
  */
 static int ec_master_idle_thread(void *priv_data)
@@ -1643,6 +1673,7 @@ static int ec_master_idle_thread(void *priv_data)
 #ifdef EC_USE_HRTIMER
     size_t sent_bytes;
 #endif
+    ec_master_thread_self_config(master);
 
     // send interval in IDLE phase
     ec_master_set_send_interval(master, 1000000 / HZ);
@@ -1713,6 +1744,7 @@ static int ec_master_operation_thread(void *priv_data)
 {
     ec_master_t *master = (ec_master_t *) priv_data;
     unsigned int seq_rt;
+    ec_master_thread_self_config(master);
 
     EC_MASTER_DBG(master, 1, "Operation thread running"
             " with fsm interval = %u us, max data size=%zu\n",
